@@ -8,6 +8,7 @@
       "ff6: worlds collide",
       "ff6 wc",
       "ff6: wc",
+      "ff6:wc",
       "async",
       "wc ",
       "sotw",
@@ -23,7 +24,10 @@
     ],
     "exclusions": [
       "bc",
-      "beyond chaos"
+      "pixel remaster",
+      "beyond chaos",
+      "beyondchaos",
+      "beyond-chaos"
     ]
   },
   "27284": {
@@ -35,7 +39,6 @@
       "ff6: worlds collide",
       "ff6 wc",
       "ff6:wc",
-      "wc ",
       "ffvi:wc",
       "ffviwc"
     ],
