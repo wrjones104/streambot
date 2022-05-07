@@ -14,8 +14,6 @@ init_msg = {}
 load_dotenv()
 client = discord.Client()
 
-
-
 with open('db/game_cats.json') as f:
     gcats = json.load(f)
     sad_day = f"I can't find any FF6WC streams right now. In order for me to find streams, the title must reference " \
@@ -35,6 +33,7 @@ async def start_stream_list(client):
 async def purge_channels(client):
     def is_me(m):
         return m.author == client.user
+
     with open('db/streambot_channels.json') as c:
         streambot_channels = json.load(c)
     for a in streambot_channels:
@@ -156,11 +155,17 @@ async def getstreams(client):
             del current_stream_msgs[k]
     if n_streamlist == {}:
         for y, v in init_msg.items():
-            await v.edit(content=sad_day)
+            try:
+                await v.edit(content=sad_day)
+            except discord.errors.HTTPException:
+                await getstreams.restart()
     else:
         for y, v in init_msg.items():
-            await v.edit(content="I found some active streams! Show some love by joining in and following FF6WC"
-                                 " streamers!")
+            try:
+                await v.edit(content="I found some active streams! Show some love by joining in and following FF6WC"
+                                     " streamers!")
+            except discord.errors.HTTPException:
+                await getstreams.restart()
 
 
 client.run(os.getenv('DISCORD_TOKEN'))
