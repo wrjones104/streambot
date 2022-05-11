@@ -2,17 +2,16 @@ import copy
 import http.client
 import json
 import os
+from asyncio import sleep
 
 import discord
 from discord.ext import tasks
 from dotenv import load_dotenv
 
-stream_msg = {}
-current_stream_msgs = {}
-init_msg = {}
-
 load_dotenv()
 client = discord.Client()
+
+init_msg = {}
 
 with open('db/game_cats.json') as f:
     gcats = json.load(f)
@@ -23,14 +22,15 @@ with open('db/game_cats.json') as f:
               f" are: {', '.join(gcats['27284']['keywords'])}"
 
 
-async def start_stream_list(client):
+async def start_stream_list():
     # When SeedBot logs in, it's going to prepare all "live stream" channels by clearing
     # all previous messages from itself and posting an initial message which will act as the "edit" anchor
-    await purge_channels(client)
-    getstreams.start(client)
+    await purge_channels()
+    await sleep(3)
+    getstreams.start()
 
 
-async def purge_channels(client):
+async def purge_channels():
     def is_me(m):
         return m.author == client.user
 
@@ -49,7 +49,7 @@ async def purge_channels(client):
 @client.event
 async def on_ready():
     print('We have logged in as {0.user}'.format(client))
-    await start_stream_list(client)
+    await start_stream_list()
 
 
 @client.event
@@ -57,11 +57,17 @@ async def on_message(message):
     if message.author == client.user:
         return
     if message.content.startswith("!restart"):
-        await start_stream_list(client)
+        try:
+            await message.delete()
+        except discord.errors.Forbidden:
+            pass
+        getstreams.cancel()
+        await start_stream_list()
+
 
 
 @tasks.loop(minutes=1)
-async def getstreams(client):
+async def getstreams():
     # We're just going to load a bunch of files into variables. We're doing this here so that it reads the files on
     # every loop, which allows us to edit the files while the bot is running. This is helpful for if we want to add
     # channels, categories or keywords without having to restart the bot.
@@ -71,6 +77,8 @@ async def getstreams(client):
         streambot_channels = json.load(sc)
     global stream_msg
     n_streamlist = {}
+    stream_msg = {}
+    current_stream_msgs = {}
 
     # This next part searches the Twitch API for all categories and keywords that are specified in the
     # "game_cats.json" file
@@ -91,7 +99,7 @@ async def getstreams(client):
         if "Invalid OAuth token" in x:
             for sc in streambot_channels:
                 channel = client.get_channel(streambot_channels[sc]['channel_id'])
-                await purge_channels(client)
+                await purge_channels()
                 await channel.send("BZZZZZZT!!!\n---------------------\nTwitch OAuth token expired. Tell Jones!")
                 return getstreams.stop()
             break
