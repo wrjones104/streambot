@@ -52,6 +52,14 @@ async def on_ready():
     await start_stream_list(client)
 
 
+@client.event
+async def on_message(message):
+    if message.author == client.user:
+        return
+    if message.content.startswith("!restart"):
+        await start_stream_list(client)
+
+
 @tasks.loop(minutes=1)
 async def getstreams(client):
     # We're just going to load a bunch of files into variables. We're doing this here so that it reads the files on
