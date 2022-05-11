@@ -12,6 +12,8 @@ load_dotenv()
 client = discord.Client()
 
 init_msg = {}
+stream_msg = {}
+current_stream_msgs = {}
 
 with open('db/game_cats.json') as f:
     gcats = json.load(f)
@@ -59,7 +61,7 @@ async def on_message(message):
     if message.content.startswith("!restart"):
         try:
             await message.delete()
-        except (discord.errors.Forbidden, discord.errors.NotFound):
+        except discord.errors.Forbidden:
             pass
         getstreams.cancel()
         await start_stream_list()
@@ -75,9 +77,8 @@ async def getstreams():
     with open('db/streambot_channels.json') as sc:
         streambot_channels = json.load(sc)
     global stream_msg
+    global current_stream_msgs
     n_streamlist = {}
-    stream_msg = {}
-    current_stream_msgs = {}
 
     # This next part searches the Twitch API for all categories and keywords that are specified in the
     # "game_cats.json" file
