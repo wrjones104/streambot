@@ -2,18 +2,18 @@ import copy
 import http.client
 import json
 import os
-from asyncio import sleep
 
 import discord
 from discord.ext import tasks
 from dotenv import load_dotenv
 
+stream_msg = {}
+current_stream_msgs = {}
+init_msg = {}
+
 load_dotenv()
 client = discord.Client()
 
-init_msg = {}
-stream_msg = {}
-current_stream_msgs = {}
 
 with open('db/game_cats.json') as f:
     gcats = json.load(f)
@@ -28,14 +28,12 @@ async def start_stream_list():
     # When SeedBot logs in, it's going to prepare all "live stream" channels by clearing
     # all previous messages from itself and posting an initial message which will act as the "edit" anchor
     await purge_channels()
-    await sleep(3)
     getstreams.start()
 
 
 async def purge_channels():
     def is_me(m):
         return m.author == client.user
-
     with open('db/streambot_channels.json') as c:
         streambot_channels = json.load(c)
     for a in streambot_channels:
@@ -54,19 +52,6 @@ async def on_ready():
     await start_stream_list()
 
 
-@client.event
-async def on_message(message):
-    if message.author == client.user:
-        return
-    if message.content.startswith("!restart"):
-        try:
-            await message.delete()
-        except discord.errors.Forbidden:
-            pass
-        getstreams.cancel()
-        await start_stream_list()
-
-
 @tasks.loop(minutes=1)
 async def getstreams():
     # We're just going to load a bunch of files into variables. We're doing this here so that it reads the files on
@@ -77,7 +62,6 @@ async def getstreams():
     with open('db/streambot_channels.json') as sc:
         streambot_channels = json.load(sc)
     global stream_msg
-    global current_stream_msgs
     n_streamlist = {}
 
     # This next part searches the Twitch API for all categories and keywords that are specified in the
@@ -171,17 +155,11 @@ async def getstreams():
             del current_stream_msgs[k]
     if n_streamlist == {}:
         for y, v in init_msg.items():
-            try:
-                await v.edit(content=sad_day)
-            except discord.errors.HTTPException:
-                await getstreams.restart(client)
+            await v.edit(content=sad_day)
     else:
         for y, v in init_msg.items():
-            try:
-                await v.edit(content="I found some active streams! Show some love by joining in and following FF6WC"
-                                     " streamers!")
-            except discord.errors.HTTPException:
-                await getstreams.restart(client)
+            await v.edit(content="I found some active streams! Show some love by joining in and following FF6WC"
+                                 " streamers!")
 
 
 client.run(os.getenv('DISCORD_TOKEN'))
