@@ -2,6 +2,7 @@ import copy
 import http.client
 import json
 import os
+from asyncio import sleep
 
 import discord
 from discord.ext import tasks
@@ -13,7 +14,6 @@ init_msg = {}
 
 load_dotenv()
 client = discord.Client()
-
 
 with open('db/game_cats.json') as f:
     gcats = json.load(f)
@@ -34,6 +34,7 @@ async def start_stream_list():
 async def purge_channels():
     def is_me(m):
         return m.author == client.user
+
     with open('db/streambot_channels.json') as c:
         streambot_channels = json.load(c)
     for a in streambot_channels:
@@ -158,8 +159,14 @@ async def getstreams():
             await v.edit(content=sad_day)
     else:
         for y, v in init_msg.items():
-            await v.edit(content="I found some active streams! Show some love by joining in and following FF6WC"
-                                 " streamers!")
+            try:
+                await v.edit(content="I found some active streams! Show some love by joining in and following FF6WC "
+                                     "streamers!")
+            except discord.errors.HTTPException:
+                print("It happened again!!!!")
+                await sleep(5)
+                await v.edit(content="I found some active streams! Show some love by joining in and following FF6WC "
+                                     "streamers!")
 
 
 client.run(os.getenv('DISCORD_TOKEN'))
