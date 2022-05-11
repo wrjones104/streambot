@@ -59,7 +59,7 @@ async def on_message(message):
     if message.content.startswith("!restart"):
         try:
             await message.delete()
-        except discord.errors.Forbidden:
+        except (discord.errors.Forbidden, discord.errors.NotFound):
             pass
         getstreams.cancel()
         await start_stream_list()
