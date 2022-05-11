@@ -158,14 +158,14 @@ async def getstreams(client):
             try:
                 await v.edit(content=sad_day)
             except discord.errors.HTTPException:
-                await getstreams.restart()
+                await getstreams.restart(client)
     else:
         for y, v in init_msg.items():
             try:
                 await v.edit(content="I found some active streams! Show some love by joining in and following FF6WC"
                                      " streamers!")
             except discord.errors.HTTPException:
-                await getstreams.restart()
+                await getstreams.restart(client)
 
 
 client.run(os.getenv('DISCORD_TOKEN'))
