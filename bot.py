@@ -13,7 +13,7 @@ current_stream_msgs = {}
 init_msg = {}
 
 load_dotenv()
-client = discord.Client()
+client = discord.Client(intents=discord.Intents.default())
 
 with open('db/game_cats.json') as f:
     gcats = json.load(f)
