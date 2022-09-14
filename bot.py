@@ -158,7 +158,6 @@ async def getstreams():
                     msg = await channel.send(embed=embed)
                     msg_key = '_'.join([str(channel.id), str(x)])
                     current_stream_msgs[msg_key] = {"stream_id": x, "msg_id": msg.id, "channel": channel.id, "title": n_streamlist[x]['title'].strip(), "category": n_streamlist[x]['category']}
-        print(f"ping")
         for y, v in copy.deepcopy(current_stream_msgs).items():
             if v['stream_id'] not in n_streamlist.keys():
                 channel = client.get_channel(v['channel'])
