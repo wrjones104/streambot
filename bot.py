@@ -63,7 +63,7 @@ async def on_ready():
     await start_stream_list()
 
 
-@tasks.loop(seconds=20)
+@tasks.loop(minutes=1)
 async def getstreams():
     try:
         # We're just going to load a bunch of files into variables. We're doing this here so that it reads the files on
