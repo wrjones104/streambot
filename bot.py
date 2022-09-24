@@ -1,17 +1,16 @@
 import copy
 import http.client
 import json
-import os
 from asyncio import sleep
 
 import discord
 from discord.ext import tasks
+from discord.utils import get
+
 import db.tokens as tokens
 
 stream_msg = {}
 current_stream_msgs = {}
-init_msg = {}
-
 
 
 class aclient(discord.Client):
@@ -21,21 +20,14 @@ class aclient(discord.Client):
     async def on_ready(self):
         await self.wait_until_ready()
         print(f"We have logged in as {self.user}.")
+        await start_stream_list()
 
-
-with open('db/game_cats.json') as f:
-    gcats = json.load(f)
-    sad_day = f"I can't find any FF6WC streams right now. In order for me to find streams, the title must reference " \
-              f"FF6WC in some way.\n--------------------------------------------\nMy current keywords for the" \
-              f" **Final Fantasy VI** category are:" \
-              f" {', '.join(gcats['858043689']['keywords'])}\n\nMy current keywords for the **Retro** category" \
-              f" are: {', '.join(gcats['27284']['keywords'])}"
 
 client = aclient()
 
 
 async def start_stream_list():
-    # When StreamBot logs in, it's going to prepare all "live stream" channels by clearing
+    # When StreamBot logs in, it's going to prepare all "live-now" channels by clearing
     # all previous messages from itself and posting an initial message which will act as the "edit" anchor
     await purge_channels()
     getstreams.start()
@@ -45,34 +37,24 @@ async def purge_channels():
     def is_me(m):
         return m.author == client.user
 
-    with open('db/streambot_channels.json') as c:
-        streambot_channels = json.load(c)
-    for a in streambot_channels:
-        try:
-            clean_channel = client.get_channel(streambot_channels[a]['channel_id'])
+    try:
+        guilds = [guild async for guild in client.fetch_guilds()]
+        for x in guilds:
+            clean_channel = get(client.get_all_channels(), guild=x, name='live-now')
             await clean_channel.purge(check=is_me)
-            init_msg[clean_channel] = await clean_channel.send("Initializing...")
-        except AttributeError:
-            print("dang")
-            continue
-
-
-@client.event
-async def on_ready():
-    print('We have logged in as {0.user}'.format(client))
-    await start_stream_list()
+    except AttributeError:
+        print("dang")
 
 
 @tasks.loop(minutes=1)
 async def getstreams():
     try:
-        # We're just going to load a bunch of files into variables. We're doing this here so that it reads the files on
+        # We're going to load the keywords file into a dictionary. We're doing this here so that it reads the file on
         # every loop, which allows us to edit the files while the bot is running. This is helpful for if we want to add
         # channels, categories or keywords without having to restart the bot.
+        guilds = [guild async for guild in client.fetch_guilds()]
         with open('db/game_cats.json') as gc:
             game_cats = json.load(gc)
-        with open('db/streambot_channels.json') as sc:
-            streambot_channels = json.load(sc)
         global stream_msg
         n_streamlist = {}
 
@@ -93,8 +75,8 @@ async def getstreams():
             # Twitch's API requires a refreshed token every 90 days. Chances are, I'm going to forget about this so this
             # message is a reminder if that happens! :)
             if "Invalid OAuth token" in x:
-                for sc in streambot_channels:
-                    channel = client.get_channel(streambot_channels[sc]['channel_id'])
+                for g in guilds:
+                    channel = get(client.get_all_channels(), guild=g, name='live-now')
                     await purge_channels()
                     await channel.send("BZZZZZZT!!!\n---------------------\nTwitch OAuth token expired. Tell Jones!")
                     return getstreams.stop()
@@ -148,8 +130,8 @@ async def getstreams():
             if any(str(x) in d.values() for d in current_stream_msgs.values()):
                 pass
             else:
-                for sc in streambot_channels:
-                    channel = client.get_channel(streambot_channels[sc]['channel_id'])
+                for g in guilds:
+                    channel = get(client.get_all_channels(), guild=g, name='live-now')
                     embed = discord.Embed()
                     embed.title = f'{n_streamlist[x]["user_name"]} is streaming now!'
                     embed.url = f'https://twitch.tv/{n_streamlist[x]["user_name"]}'
@@ -157,30 +139,38 @@ async def getstreams():
                     embed.colour = discord.Colour.random()
                     msg = await channel.send(embed=embed)
                     msg_key = '_'.join([str(channel.id), str(x)])
-                    current_stream_msgs[msg_key] = {"stream_id": x, "msg_id": msg.id, "channel": channel.id, "title": n_streamlist[x]['title'].strip(), "category": n_streamlist[x]['category']}
+                    current_stream_msgs[msg_key] = {"stream_id": x, "msg_id": msg.id, "channel": channel.id,
+                                                    "title": n_streamlist[x]['title'].strip(),
+                                                    "category": n_streamlist[x]['category']}
         for y, v in copy.deepcopy(current_stream_msgs).items():
             if v['stream_id'] not in n_streamlist.keys():
                 channel = client.get_channel(v['channel'])
                 message = await channel.fetch_message(v['msg_id'])
-                await message.delete()
+                try:
+                    await message.delete()
+                except:
+                    del current_stream_msgs[v]
             elif v['stream_id'] in n_streamlist.keys() and (v['title'] != n_streamlist[v['stream_id']]['title']):
                 channel = client.get_channel(v['channel'])
                 message = await channel.fetch_message(v['msg_id'])
-                del current_stream_msgs[y]
-                await message.delete()
+                try:
+                    await message.delete()
+                    del current_stream_msgs[y]
+                except:
+                    del current_stream_msgs[y]
         for k, u in copy.deepcopy(current_stream_msgs).items():
             if u['stream_id'] not in n_streamlist.keys():
                 del current_stream_msgs[k]
-        if n_streamlist == {}:
-            for y, v in init_msg.items():
-                await v.edit(content=sad_day)
-        else:
-            for y, v in init_msg.items():
-                await v.edit(content="I found some active streams! Show some love by joining in and following FF6WC "
-                                     "streamers!")
+
     except discord.errors.HTTPException as e:
         print(f"Error: {e}")
         await sleep(5)
+        pass
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        getstreams.stop()
+        await sleep(10)
+        getstreams.start()
         pass
 
 
