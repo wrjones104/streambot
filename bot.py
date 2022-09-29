@@ -20,7 +20,8 @@ class aclient(discord.Client):
     async def on_ready(self):
         await self.wait_until_ready()
         print(f"We have logged in as {self.user}.")
-        await start_stream_list()
+        if not getstreams.is_running():
+            await start_stream_list()
 
 
 client = aclient()
