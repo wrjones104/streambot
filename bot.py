@@ -32,10 +32,17 @@ async def start_stream_list():
     await purge_channels()
     try:
         getstreams.start()
-    except RuntimeError:
+    except RuntimeError as e:
+        print(f"Error in 'start_stream_list', attempting to restart task\nError: {e}")
         getstreams.stop()
         await sleep(10)
-        getstreams.start()
+        try:
+            getstreams.start()
+        except RuntimeError as e2:
+            print(f"First task restart didn't work, trying again in 2 minutes...\nError: {e2}")
+            getstreams.stop()
+            await sleep(120)
+            getstreams.start()
 
 
 async def purge_channels():
