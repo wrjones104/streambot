@@ -184,7 +184,13 @@ async def getstreams():
         print(f"Error: {e}")
         getstreams.stop()
         await sleep(10)
-        getstreams.start()
+        try:
+            getstreams.start()
+        except RuntimeError as e2:
+            print(f"First task restart didn't work, trying again in 2 minutes...\nError: {e2}")
+            getstreams.stop()
+            await sleep(120)
+            getstreams.start()
         pass
 
 
