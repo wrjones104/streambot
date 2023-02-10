@@ -15,12 +15,47 @@
       "seed of the week",
       "living seed",
       "draft race",
+      "ultros league",
+      "ul3",
+      "totm",
       "race",
       "racing",
       "ffvi:wc",
       "ffviwc",
-      "ffvi wc",
-      "rando"
+      "ffvi wc"
+    ],
+    "exclusions": [
+      "bc",
+      "pixel remaster",
+      "beyond chaos",
+      "beyondchaos",
+      "beyond-chaos"
+    ]
+  },
+  "5815": {
+    "Name": "Final Fantasy VI",
+    "keywords": [
+      "ff6wc",
+      "collide",
+      "ff6 worlds collide",
+      "ff6: worlds collide",
+      "ff6 wc",
+      "ff6: wc",
+      "ff6:wc",
+      "async",
+      "wc ",
+      "sotw",
+      "seed of the week",
+      "living seed",
+      "draft race",
+      "ultros league",
+      "ul3",
+      "totm",
+      "race",
+      "racing",
+      "ffvi:wc",
+      "ffviwc",
+      "ffvi wc"
     ],
     "exclusions": [
       "bc",

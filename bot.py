@@ -93,7 +93,8 @@ async def getstreams():
                 for g in guilds:
                     channel = get(client.get_all_channels(), guild=g, name='live-now')
                     await purge_channels()
-                    await channel.send("BZZZZZZT!!!\n---------------------\nTwitch OAuth token expired. Tell Jones!")
+                    await channel.send(
+                        "BZZZZZZT!!!\n---------------------\nTwitch OAuth token expired. Fix it, <@&197757429948219392>!")
                     return getstreams.stop()
                 break
             j = json.loads(x)
