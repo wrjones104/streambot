@@ -8,6 +8,7 @@ from discord.ext import tasks
 from discord.utils import get
 
 import db.tokens as tokens
+from views import streamButton
 
 stream_msg = {}
 current_stream_msgs = {}
@@ -55,8 +56,8 @@ async def purge_channels():
         for x in guilds:
             clean_channel = get(client.get_all_channels(), guild=x, name='live-now')
             await clean_channel.purge(check=is_me)
-            await clean_channel.send("This is where all active streams will show up! For your stream to show up, "
-                                     "it must mention FF6WC in some way.")
+            await clean_channel.send(f"This is where all active streams will show up! For your stream to show up, "
+                                     "it must mention FF6WC in some way.", view=streamButton())
     except AttributeError:
         print("dang")
 
