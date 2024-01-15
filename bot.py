@@ -37,7 +37,7 @@ class aclient(commands.Bot):
 
 def check_admin(interaction):
     for x in interaction.user.roles:
-        if x.name == "Racebot Admin":
+        if x.name in ["Racebot Admin", "Moderation team", "Admins"]:
             return True
 
 
