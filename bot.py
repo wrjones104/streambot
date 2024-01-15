@@ -1,3 +1,4 @@
+import asyncio.exceptions
 import copy
 import datetime
 import http.client
@@ -48,13 +49,13 @@ def restart_bot():
 client = aclient()
 
 
-@client.tree.command(name="restart", description="Racebot Admins can restart the bot if it's having trouble")
+@client.tree.command(name="restart", description="Restart the bot if it's having trouble (limited to certain roles)")
 async def restart(interaction: discord.Interaction):
     if check_admin(interaction):
         await interaction.response.send_message('Restarting bot...')
         restart_bot()
     else:
-        await interaction.response.send_message("Only Racebot Admins can use that command!", ephemeral=True)
+        await interaction.response.send_message("Only Admins, Moderators and Racebot Admins can use that command!", ephemeral=True)
 
 
 async def start_stream_list():
@@ -226,4 +227,7 @@ async def getstreams():
         pass
 
 
-client.run(tokens.DISCORD_TOKEN)
+try:
+    client.run(tokens.DISCORD_TOKEN)
+except (asyncio.exceptions.TimeoutError, asyncio.exceptions.CancelledError, discord.errors.ConnectionClosed):
+    restart_bot()
