@@ -1,10 +1,14 @@
 import copy
+import datetime
 import http.client
 import json
+import os
+import platform
+import sys
 from asyncio import sleep
 
 import discord
-from discord.ext import tasks
+from discord.ext import tasks, commands
 from discord.utils import get
 
 import db.tokens as tokens
@@ -14,18 +18,43 @@ stream_msg = {}
 current_stream_msgs = {}
 
 
-class aclient(discord.Client):
+class aclient(commands.Bot):
     def __init__(self):
-        super().__init__(intents=discord.Intents.default())
+        super().__init__(command_prefix='%^!', intents=discord.Intents.default())
 
     async def on_ready(self):
         await self.wait_until_ready()
-        print(f"We have logged in as {self.user}.")
+        prfx = str(datetime.datetime.utcnow())
+        print(prfx + " - Logged in as " + client.user.name)
+        print(prfx + " - Bot ID: " + str(client.user.id))
+        print(prfx + " - Discord Version: " + discord.__version__)
+        print(prfx + " - Python Version: " + str(platform.python_version()))
+        synclist = await client.tree.sync()
+        print(prfx + " - Slash Commands Synced: " + str(len(synclist)))
         if not getstreams.is_running():
             await start_stream_list()
 
 
+def check_admin(interaction):
+    for x in interaction.user.roles:
+        if x.name == "Racebot Admin":
+            return True
+
+
+def restart_bot():
+    os.execv(sys.executable, ['python3'] + sys.argv)
+
+
 client = aclient()
+
+
+@client.tree.command(name="restart", description="Racebot Admins can restart the bot if it's having trouble")
+async def restart(interaction: discord.Interaction):
+    if check_admin(interaction):
+        await interaction.response.send_message('Restarting bot...')
+        restart_bot()
+    else:
+        await interaction.response.send_message("Only Racebot Admins can use that command!", ephemeral=True)
 
 
 async def start_stream_list():
@@ -95,7 +124,7 @@ async def getstreams():
                     channel = get(client.get_all_channels(), guild=g, name='live-now')
                     await purge_channels()
                     await channel.send(
-                        "BZZZZZZT!!!\n---------------------\nTwitch OAuth token expired. Fix it, <@&197757429948219392>!")
+                        "BZZZZZZT!!!\n---------------------\nTwitch OAuth token expired. Fix it, <@197757429948219392>!")
                     return getstreams.stop()
                 break
             j = json.loads(x)
