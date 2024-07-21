@@ -2,6 +2,7 @@ import asyncio.exceptions
 import copy
 import datetime
 import http.client
+import traceback
 import json
 import os
 import platform
@@ -11,8 +12,11 @@ from asyncio import sleep
 import discord
 from discord.ext import tasks, commands
 from discord.utils import get
+from discord.ui import Modal, TextInput
+from discord import Interaction, TextStyle
 
 import db.tokens as tokens
+import functions
 from views import streamButton
 
 stream_msg = {}
@@ -25,21 +29,76 @@ class aclient(commands.Bot):
 
     async def on_ready(self):
         await self.wait_until_ready()
-        prfx = str(datetime.datetime.utcnow())
-        print(prfx + " - Logged in as " + client.user.name)
-        print(prfx + " - Bot ID: " + str(client.user.id))
-        print(prfx + " - Discord Version: " + discord.__version__)
-        print(prfx + " - Python Version: " + str(platform.python_version()))
-        synclist = await client.tree.sync()
-        print(prfx + " - Slash Commands Synced: " + str(len(synclist)))
+        print(f"{datetime.datetime.utcnow()} - Logged in as " + client.user.name)
+        print(f"{datetime.datetime.utcnow()} - Bot ID: " + str(client.user.id))
+        print(f"{datetime.datetime.utcnow()} - Discord Version: " + discord.__version__)
+        print(
+            f"{datetime.datetime.utcnow()} - Python Version: "
+            + str(platform.python_version())
+        )
+        synclist = await self.tree.sync()
+        print(
+            f"{datetime.datetime.utcnow()} - Slash Commands Synced: "
+            + str(len(synclist))
+        )
+        functions.init_db()
+        print(f"{datetime.datetime.utcnow()} - Databases Initialized!")
         if not getstreams.is_running():
             await start_stream_list()
 
+class NewUserModal(Modal):
+    username = TextInput(
+        label="Enter the user's Discord name",
+        style=TextStyle.short,
+    )
+    
+    userid = TextInput(
+        label="Enter the user's Discord ID",
+        style=TextStyle.short,
+    )
 
-def check_admin(interaction):
-    for x in interaction.user.roles:
-        if x.name in ["Racebot Admin", "Moderation team", "Admins"]:
-            return True
+    def __init__(self, title: str) -> None:
+        super().__init__(title=title, timeout=None)
+
+    async def on_submit(self, interaction: Interaction, /) -> None:
+        await interaction.response.defer()
+
+class StreamerModal(Modal):
+    streamer = TextInput(
+        label="Enter the streamer's Twitch name",
+        style=TextStyle.short,
+    )
+
+    def __init__(self, title: str) -> None:
+        super().__init__(title=title, timeout=None)
+
+    async def on_submit(self, interaction: Interaction, /) -> None:
+        await interaction.response.defer()
+
+
+class TagModal(Modal):
+    tag = TextInput(
+        label="Enter the tag name",
+        style=TextStyle.short,
+    )
+
+    def __init__(self, title: str) -> None:
+        super().__init__(title=title, timeout=None)
+
+    async def on_submit(self, interaction: Interaction, /) -> None:
+        await interaction.response.defer()
+
+class DelUserModal(Modal):
+    username = TextInput(
+        label="Enter the user's name",
+        style=TextStyle.short,
+    )
+
+    def __init__(self, title: str) -> None:
+        super().__init__(title=title, timeout=None)
+
+    async def on_submit(self, interaction: Interaction, /) -> None:
+        await interaction.response.defer()
 
 
 def restart_bot():
@@ -49,18 +108,98 @@ def restart_bot():
 client = aclient()
 
 
-@client.tree.command(name="restart", description="Restart the bot if it's having trouble (limited to certain roles)")
+@client.tree.command(name="restart", description="Restart the bot if it's having trouble (admins only)")
 async def restart(interaction: discord.Interaction):
-    if check_admin(interaction):
+    user = await functions.get_user(interaction.user.id)
+    if user[0]:
         await interaction.response.send_message('Restarting bot...')
         restart_bot()
     else:
-        await interaction.response.send_message("Only Admins, Moderators and Racebot Admins can use that command!", ephemeral=True)
+        await interaction.response.send_message("Only bot admins may use that command.", ephemeral=True)
+
+@client.tree.command(name="register", description="Register a new streamer.")
+async def register(interaction: discord.Interaction):
+    modal = StreamerModal("Add a new streamer")
+    await interaction.response.send_modal(modal)
+    await modal.wait()
+    await functions.add_streamer(str(modal.streamer))
+    return await interaction.followup.send(f"{str(modal.streamer)} added!", ephemeral=True)
+
+@client.tree.command(name='unregister', description="Unregister a streamer (admins only)")
+async def unregister(interaction: discord.Interaction):
+    user = await functions.get_user(interaction.user.id)
+    if user[0]:
+        modal = StreamerModal("Delete a streamer")
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        await functions.del_streamer(str(modal.streamer))
+        return await interaction.followup.send(f"{str(modal.streamer)} deleted!", ephemeral=True)
+    else:
+        await interaction.response.send_message("Only bot admins may use this command.", ephemeral=True)
+
+@client.tree.command(name="newtag", description="Register a new tag (admins only).")
+async def newtag(interaction: discord.Interaction):
+    user = await functions.get_user(interaction.user.id)
+    if user[0]:
+        modal = TagModal("Add a new tag")
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        await functions.add_tag(str(modal.tag))
+        return await interaction.followup.send(f"{str(modal.tag)} added!", ephemeral=True)
+    else:
+        await interaction.response.send_message("Only bot admins may use this command.", ephemeral=True)
+
+@client.tree.command(name="removetag", description="Register a new tag (admins only).")
+async def removetag(interaction: discord.Interaction):
+    user = await functions.get_user(interaction.user.id)
+    if user[0]:
+        modal = TagModal("Remove a tag")
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        await functions.del_tag(str(modal.tag))
+        return await interaction.followup.send(f"{str(modal.tag)} removed!", ephemeral=True)
+    else:
+        await interaction.response.send_message("Only bot admins may use this command.", ephemeral=True)
+
+@client.tree.command(name="adduser", description="Register a bot user (admins only).")
+async def adduser(interaction: discord.Interaction):
+    user = await functions.get_user(interaction.user.id)
+    if user[0]:
+        modal = NewUserModal("Register a new user")
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        await functions.add_user(str(modal.userid), str(modal.username))
+        return await interaction.followup.send(f"{str(modal.username)} added!", ephemeral=True)
+    else:
+        await interaction.response.send_message("Only bot admins may use this command.", ephemeral=True)
+
+@client.tree.command(name="deluser", description="Unregister a bot user (admins only).")
+async def deluser(interaction: discord.Interaction):
+    user = await functions.get_user(interaction.user.id)
+    if user[0]:
+        modal = DelUserModal("Unregister a new user")
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        check = await functions.del_user(str(modal.username))
+        if check:
+            return await interaction.followup.send(f"{str(modal.username)} removed!", ephemeral=True)
+        else:
+            return await interaction.followup.send("I could not find that user in the database.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Only bot admins may use this command.", ephemeral=True)
+
+@client.tree.command(name="userlist", description="Show a list of all bot users")
+async def userlist(interaction: discord.Interaction):
+    users = await functions.get_users()
+    userlist = []
+    for x in users:
+        userlist.append(x[1])
+    return await interaction.response.send_message(f"Here are all registered users:\n```{', '.join(userlist)}```", ephemeral=True)
 
 
 async def start_stream_list():
     # When StreamBot logs in, it's going to prepare all "live-now" channels by clearing
-    # all previous messages from itself and posting an initial message which will act as the "edit" anchor
+    # all previous messages from itself.
     await purge_channels()
     try:
         getstreams.start()
@@ -86,8 +225,8 @@ async def purge_channels():
         for x in guilds:
             clean_channel = get(client.get_all_channels(), guild=x, name='live-now')
             await clean_channel.purge(check=is_me)
-            await clean_channel.send(f"This is where all active streams will show up! For your stream to show up, "
-                                     "it must mention FF6WC in some way.", view=streamButton())
+            await clean_channel.send("This is where all active streams will show up! For your stream to show up, "
+                                     "you must `/register` your Twitch user name and include a supported tag in your stream.", view=streamButton())
     except AttributeError:
         print("dang")
 
@@ -95,84 +234,49 @@ async def purge_channels():
 @tasks.loop(minutes=1)
 async def getstreams():
     try:
-        # We're going to load the keywords file into a dictionary. We're doing this here so that it reads the file on
-        # every loop, which allows us to edit the files while the bot is running. This is helpful for if we want to add
-        # channels, categories or keywords without having to restart the bot.
+        # We're going to load the streamers and tags here. We do this on every run so that any changes to the bot's database are reflected immediately.
         guilds = [guild async for guild in client.fetch_guilds()]
-        with open('db/game_cats.json') as gc:
-            game_cats = json.load(gc)
+        streamers = await functions.get_streamers()
+        intags = await functions.get_tags()
+        tags = []
+        for t in intags:
+            tags.append(t[0])
         global stream_msg
         n_streamlist = {}
+        token = functions.get_token()[0]
+        if not token:
+            token = functions.first_token()[0]
 
-        # This next part searches the Twitch API for all categories and keywords that are specified in the
-        # "game_cats.json" file
-        for gc in game_cats:
-            conn = http.client.HTTPSConnection("api.twitch.tv")
-            payload = ''
-            headers = {
-                'Client-ID': tokens.client_id,
-                'Authorization': tokens.twitch_token
-            }
-            conn.request("GET", "/helix/streams?game_id=" + str(gc) + "&first=100", payload, headers)
-            res = conn.getresponse()
-            data = res.read()
-            x = data.decode("utf-8")
 
-            # Twitch's API requires a refreshed token every 90 days. Chances are, I'm going to forget about this so this
-            # message is a reminder if that happens! :)
-            if "Invalid OAuth token" in x:
-                for g in guilds:
-                    channel = get(client.get_all_channels(), guild=g, name='live-now')
-                    await purge_channels()
-                    await channel.send(
-                        "BZZZZZZT!!!\n---------------------\nTwitch OAuth token expired. Fix it, <@197757429948219392>!")
-                    return getstreams.stop()
-                break
-            j = json.loads(x)
-            xx = j['data']
-            if not j['pagination']:
-                empty_page = True
-                pag = ""
-            else:
-                pag = j['pagination']['cursor']
-                empty_page = False
-
-            # Twitch's API will only return 100 streams max per call along with a "cursor" which you can use in a
-            # follow-up call to get the next 100 streams. This part just loops through all "pages" until it reaches an
-            # empty one (which means it's at the end)
-            while not empty_page:
-                conn.request("GET", "/helix/streams?game_id=" + str(gc) + "&first=100&after=" + str(pag), payload,
-                             headers)
+        # This next part searches the Twitch API for the streamers and tags
+        try:
+            for s in streamers:
+                conn = http.client.HTTPSConnection("api.twitch.tv")
+                payload = ''
+                headers = {
+                    'Client-ID': tokens.client_id,
+                    'Authorization': f'Bearer {token}'
+                }
+                conn.request("GET", "/helix/streams?user_login=" + str(s[0]), payload, headers)
                 res = conn.getresponse()
                 data = res.read()
                 x = data.decode("utf-8")
+                # Twitch's API requires a refreshed token every 90 days. If it's time to refresh, the bot will do that here.
+                if "Invalid OAuth token" in x:
+                    token = functions.refresh_token()
+                    return
                 j = json.loads(x)
-                try:
-                    if not j['pagination']:
-                        empty_page = True
-                        pass
-                    else:
-                        pag = j['pagination']['cursor']
-                        xx += j['data']
-                except KeyError:
-                    print(j)
-            k = len(xx)
+                xx = j['data']
+                if xx:
+                    if any(ac in map(str.lower,xx[0]['tags']) for ac in map(str.lower,tags)):
+                        n_streamlist[s[0]] = {"user_name": xx[0]["user_name"], "title": xx[0]["title"],
+                                "started_at": xx[0]["started_at"], "category": xx[0]["game_name"]}
 
-            # This part takes k (the amount of streams returned total) and uses it to iterate through all the returned
-            # streams to find any with keywords from the "game_cats.json" file in the title of the stream
-            while k != 0:
-                if any(ac in xx[k - 1]['title'].lower() for ac in game_cats[gc]['exclusions']):
-                    pass
-                elif any(ac in xx[k - 1]['title'].lower() for ac in game_cats[gc]['keywords']):
-                    aa = xx[k - 1]
-                    index = aa['id']
-                    n_streamlist[index] = {"user_name": aa["user_name"], "title": aa["title"],
-                                           "started_at": aa["started_at"], "category": aa["game_name"]}
-                k -= 1
+        except IndexError:
+            return print(f'Error: {traceback.format_exc()}')
 
         # Here we're going to create discord messages when a new stream shows up in the list. We're also going to delete
-        # messages after a stream has gone offline. Finally, if we go from 0 to >1 active stream (or vice-versa), we're
-        # going to edit the initial message
+        # messages after a stream has gone offline.
         for x in n_streamlist:
             if any(str(x) in d.values() for d in current_stream_msgs.values()):
                 pass
@@ -180,7 +284,7 @@ async def getstreams():
                 for g in guilds:
                     channel = get(client.get_all_channels(), guild=g, name='live-now')
                     embed = discord.Embed()
-                    embed.title = f'{n_streamlist[x]["user_name"]} is streaming now!'
+                    embed.title = f'{n_streamlist[x]["user_name"]} is streaming {n_streamlist[x]["category"]}!'
                     embed.url = f'https://twitch.tv/{n_streamlist[x]["user_name"]}'
                     embed.description = f'{n_streamlist[x]["title"].strip()}'
                     embed.colour = discord.Colour.random()
@@ -195,7 +299,7 @@ async def getstreams():
                 message = await channel.fetch_message(v['msg_id'])
                 try:
                     await message.delete()
-                except:
+                except Exception:
                     del current_stream_msgs[v]
             elif v['stream_id'] in n_streamlist.keys() and (v['title'] != n_streamlist[v['stream_id']]['title']):
                 channel = client.get_channel(v['channel'])
@@ -203,7 +307,7 @@ async def getstreams():
                 try:
                     await message.delete()
                     del current_stream_msgs[y]
-                except:
+                except Exception:
                     del current_stream_msgs[y]
         for k, u in copy.deepcopy(current_stream_msgs).items():
             if u['stream_id'] not in n_streamlist.keys():
