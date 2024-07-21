@@ -111,7 +111,7 @@ client = aclient()
 @client.tree.command(name="restart", description="Restart the bot if it's having trouble (admins only)")
 async def restart(interaction: discord.Interaction):
     user = await functions.get_user(interaction.user.id)
-    if user[0]:
+    if user:
         await interaction.response.send_message('Restarting bot...')
         restart_bot()
     else:
@@ -128,7 +128,7 @@ async def register(interaction: discord.Interaction):
 @client.tree.command(name='unregister', description="Unregister a streamer (admins only)")
 async def unregister(interaction: discord.Interaction):
     user = await functions.get_user(interaction.user.id)
-    if user[0]:
+    if user:
         modal = StreamerModal("Delete a streamer")
         await interaction.response.send_modal(modal)
         await modal.wait()
@@ -140,7 +140,8 @@ async def unregister(interaction: discord.Interaction):
 @client.tree.command(name="newtag", description="Register a new tag (admins only).")
 async def newtag(interaction: discord.Interaction):
     user = await functions.get_user(interaction.user.id)
-    if user[0]:
+    print(user)
+    if user:
         modal = TagModal("Add a new tag")
         await interaction.response.send_modal(modal)
         await modal.wait()
@@ -152,7 +153,7 @@ async def newtag(interaction: discord.Interaction):
 @client.tree.command(name="removetag", description="Register a new tag (admins only).")
 async def removetag(interaction: discord.Interaction):
     user = await functions.get_user(interaction.user.id)
-    if user[0]:
+    if user:
         modal = TagModal("Remove a tag")
         await interaction.response.send_modal(modal)
         await modal.wait()
@@ -164,7 +165,7 @@ async def removetag(interaction: discord.Interaction):
 @client.tree.command(name="adduser", description="Register a bot user (admins only).")
 async def adduser(interaction: discord.Interaction):
     user = await functions.get_user(interaction.user.id)
-    if user[0]:
+    if user:
         modal = NewUserModal("Register a new user")
         await interaction.response.send_modal(modal)
         await modal.wait()
@@ -176,7 +177,7 @@ async def adduser(interaction: discord.Interaction):
 @client.tree.command(name="deluser", description="Unregister a bot user (admins only).")
 async def deluser(interaction: discord.Interaction):
     user = await functions.get_user(interaction.user.id)
-    if user[0]:
+    if user:
         modal = DelUserModal("Unregister a new user")
         await interaction.response.send_modal(modal)
         await modal.wait()
@@ -195,6 +196,14 @@ async def userlist(interaction: discord.Interaction):
     for x in users:
         userlist.append(x[1])
     return await interaction.response.send_message(f"Here are all registered users:\n```{', '.join(userlist)}```", ephemeral=True)
+
+@client.tree.command(name="streamerlist", description="Show a list of all registered streamers")
+async def streamerlist(interaction: discord.Interaction):
+    users = await functions.get_streamers()
+    userlist = ""
+    for x in users:
+        userlist += f'{x[0]}\n'
+    return await interaction.response.send_message(f"Here are all registered streamers:\n```{userlist}```", ephemeral=True)
 
 
 async def start_stream_list():
@@ -243,8 +252,9 @@ async def getstreams():
             tags.append(t[0])
         global stream_msg
         n_streamlist = {}
-        token = functions.get_token()[0]
-        if not token:
+        try:
+            token = functions.get_token()[0]
+        except TypeError:
             token = functions.first_token()[0]
 
 
@@ -257,20 +267,32 @@ async def getstreams():
                     'Client-ID': tokens.client_id,
                     'Authorization': f'Bearer {token}'
                 }
-                conn.request("GET", "/helix/streams?user_login=" + str(s[0]), payload, headers)
+                conn.request("GET", "/helix/streams?user_login=" + str(s[0]).replace(" ",""), payload, headers)
                 res = conn.getresponse()
                 data = res.read()
                 x = data.decode("utf-8")
+                conn.request("GET", "/helix/users?login=" + str(s[0]).replace(" ",""), payload, headers)
+                res = conn.getresponse()
+                data = res.read()
+                y = data.decode("utf-8")
                 # Twitch's API requires a refreshed token every 90 days. If it's time to refresh, the bot will do that here.
                 if "Invalid OAuth token" in x:
                     token = functions.refresh_token()
                     return
-                j = json.loads(x)
-                xx = j['data']
-                if xx:
-                    if any(ac in map(str.lower,xx[0]['tags']) for ac in map(str.lower,tags)):
-                        n_streamlist[s[0]] = {"user_name": xx[0]["user_name"], "title": xx[0]["title"],
-                                "started_at": xx[0]["started_at"], "category": xx[0]["game_name"]}
+                elif "Malformed query params" in x:
+                    print(f'{str(s[0])} is a bad entry - review and fix')
+                    pass
+                else:
+                    j = json.loads(x)
+                    k = json.loads(y)
+                    print(x)
+                    xx = j['data']
+                    yy = k['data']
+                    if xx:
+                        if any(ac in map(str.lower,xx[0]['tags']) for ac in map(str.lower,tags)):
+                            n_streamlist[s[0]] = {"user_name": xx[0]["user_name"], "title": xx[0]["title"],
+                                    "started_at": xx[0]["started_at"], "category": xx[0]["game_name"], "pic": yy[0]["profile_image_url"]}
+                    
 
         except IndexError:
             return print(f'Error: {traceback.format_exc()}')
@@ -287,6 +309,7 @@ async def getstreams():
                     embed.title = f'{n_streamlist[x]["user_name"]} is streaming {n_streamlist[x]["category"]}!'
                     embed.url = f'https://twitch.tv/{n_streamlist[x]["user_name"]}'
                     embed.description = f'{n_streamlist[x]["title"].strip()}'
+                    embed.set_thumbnail(url=n_streamlist[x]["pic"])
                     embed.colour = discord.Colour.random()
                     msg = await channel.send(embed=embed)
                     msg_key = '_'.join([str(channel.id), str(x)])
