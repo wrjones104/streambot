@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import sys
+import calendar
 from asyncio import sleep
 
 import discord
@@ -289,7 +290,7 @@ async def getstreams():
                     if xx:
                         if any(ac in map(str.lower,xx[0]['tags']) for ac in map(str.lower,tags)):
                             n_streamlist[s[0]] = {"user_name": xx[0]["user_name"], "title": xx[0]["title"],
-                                    "started_at": xx[0]["started_at"], "category": xx[0]["game_name"], "pic": yy[0]["profile_image_url"]}
+                                    "started_at": xx[0]["started_at"], "category": xx[0]["game_name"], "pic": yy[0]["profile_image_url"], "start_time": xx[0]["started_at"]}
                     
 
         except IndexError:
@@ -308,6 +309,7 @@ async def getstreams():
                     embed.url = f'https://twitch.tv/{n_streamlist[x]["user_name"]}'
                     embed.description = f'{n_streamlist[x]["title"].strip()}'
                     embed.set_thumbnail(url=n_streamlist[x]["pic"])
+                    embed.add_field(name="Started:", value=f'<t:{calendar.timegm(datetime.datetime.strptime(n_streamlist[x]["started_at"],"%Y-%m-%dT%H:%M:%SZ").utctimetuple())}:R>')
                     embed.colour = discord.Colour.random()
                     msg = await channel.send(embed=embed)
                     msg_key = '_'.join([str(channel.id), str(x)])
