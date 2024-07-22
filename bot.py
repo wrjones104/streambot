@@ -57,14 +57,6 @@ async def restart(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("Only Admins, Moderators and Racebot Admins can use that command!", ephemeral=True)
 
-@client.tree.command(name="test", description="Test command")
-async def test(interaction: discord.Interaction):
-    if check_admin(interaction):
-        await interaction.response.send_message('Refreshing token...')
-        refresh_token()
-    else:
-        await interaction.response.send_message("Only Admins, Moderators and Racebot Admins can use that command!", ephemeral=True)
-
 def refresh_token():
     conn = http.client.HTTPSConnection("id.twitch.tv")
     payload = f'client_id={tokens.client_id}&client_secret={tokens.secret}&grant_type=client_credentials'
