@@ -140,7 +140,6 @@ async def unregister(interaction: discord.Interaction):
 @client.tree.command(name="newtag", description="Register a new tag (admins only).")
 async def newtag(interaction: discord.Interaction):
     user = await functions.get_user(interaction.user.id)
-    print(user)
     if user:
         modal = TagModal("Add a new tag")
         await interaction.response.send_modal(modal)
@@ -285,7 +284,6 @@ async def getstreams():
                 else:
                     j = json.loads(x)
                     k = json.loads(y)
-                    print(x)
                     xx = j['data']
                     yy = k['data']
                     if xx:
