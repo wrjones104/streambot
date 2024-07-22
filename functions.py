@@ -138,11 +138,7 @@ def first_token():
 
 def refresh_token():
     conn = http.client.HTTPSConnection("id.twitch.tv")
-    payload = {
-        'client_id': tokens.client_id,
-        'client_secret': tokens.secret,
-        'grant_type': 'client_credentials'
-    }
+    payload = f'client_id={tokens.client_id}&client_secret={tokens.secret}&grant_type=client_credentials'
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded'
     }
