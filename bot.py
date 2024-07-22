@@ -57,6 +57,33 @@ async def restart(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("Only Admins, Moderators and Racebot Admins can use that command!", ephemeral=True)
 
+@client.tree.command(name="test", description="Test command")
+async def test(interaction: discord.Interaction):
+    if check_admin(interaction):
+        await interaction.response.send_message('Refreshing token...')
+        refresh_token()
+    else:
+        await interaction.response.send_message("Only Admins, Moderators and Racebot Admins can use that command!", ephemeral=True)
+
+def refresh_token():
+    conn = http.client.HTTPSConnection("id.twitch.tv")
+    payload = f'client_id={tokens.client_id}&client_secret={tokens.secret}&grant_type=client_credentials'
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    conn.request("POST", "/oauth2/token", payload, headers)
+    res = conn.getresponse()
+    data = res.read()
+    x = data.decode("utf-8")
+    j = json.loads(x)
+    newtoken = j['access_token']
+    with open('db/credentials.json') as cred:
+        update_cred = json.load(cred)
+    with open('db/credentials.json', 'w') as cred:
+        update_cred['token'] = newtoken
+        cred.write(json.dumps(update_cred))
+    return newtoken
+
 
 async def start_stream_list():
     # When StreamBot logs in, it's going to prepare all "live-now" channels by clearing
@@ -86,7 +113,7 @@ async def purge_channels():
         for x in guilds:
             clean_channel = get(client.get_all_channels(), guild=x, name='live-now')
             await clean_channel.purge(check=is_me)
-            await clean_channel.send(f"This is where all active streams will show up! For your stream to show up, "
+            await clean_channel.send("This is where all active streams will show up! For your stream to show up, "
                                      "it must mention FF6WC in some way.", view=streamButton())
     except AttributeError:
         print("dang")
@@ -101,6 +128,9 @@ async def getstreams():
         guilds = [guild async for guild in client.fetch_guilds()]
         with open('db/game_cats.json') as gc:
             game_cats = json.load(gc)
+        with open('db/credentials.json') as cred:
+            creds = json.load(cred)
+        token = creds['token']
         global stream_msg
         n_streamlist = {}
 
@@ -111,23 +141,17 @@ async def getstreams():
             payload = ''
             headers = {
                 'Client-ID': tokens.client_id,
-                'Authorization': tokens.twitch_token
+                'Authorization': f'Bearer {token}'
             }
             conn.request("GET", "/helix/streams?game_id=" + str(gc) + "&first=100", payload, headers)
             res = conn.getresponse()
             data = res.read()
             x = data.decode("utf-8")
 
-            # Twitch's API requires a refreshed token every 90 days. Chances are, I'm going to forget about this so this
-            # message is a reminder if that happens! :)
+            # Twitch's API requires a refreshed token every 90 days. If it's time to refresh, the bot will do that here.
             if "Invalid OAuth token" in x:
-                for g in guilds:
-                    channel = get(client.get_all_channels(), guild=g, name='live-now')
-                    await purge_channels()
-                    await channel.send(
-                        "BZZZZZZT!!!\n---------------------\nTwitch OAuth token expired. Fix it, <@197757429948219392>!")
-                    return getstreams.stop()
-                break
+                token = refresh_token()
+                return
             j = json.loads(x)
             xx = j['data']
             if not j['pagination']:
@@ -165,9 +189,15 @@ async def getstreams():
                     pass
                 elif any(ac in xx[k - 1]['title'].lower() for ac in game_cats[gc]['keywords']):
                     aa = xx[k - 1]
+                    conn.request("GET", "/helix/users?login=" + str(aa["user_name"]), payload, headers)
+                    res = conn.getresponse()
+                    data = res.read()
+                    y = data.decode("utf-8")
+                    g = json.loads(y)
+                    gg = g['data']
                     index = aa['id']
                     n_streamlist[index] = {"user_name": aa["user_name"], "title": aa["title"],
-                                           "started_at": aa["started_at"], "category": aa["game_name"]}
+                                           "started_at": aa["started_at"], "category": aa["game_name"], "pic": gg[0]["profile_image_url"]}
                 k -= 1
 
         # Here we're going to create discord messages when a new stream shows up in the list. We're also going to delete
@@ -183,6 +213,7 @@ async def getstreams():
                     embed.title = f'{n_streamlist[x]["user_name"]} is streaming now!'
                     embed.url = f'https://twitch.tv/{n_streamlist[x]["user_name"]}'
                     embed.description = f'{n_streamlist[x]["title"].strip()}'
+                    embed.set_thumbnail(url=n_streamlist[x]["pic"])
                     embed.colour = discord.Colour.random()
                     msg = await channel.send(embed=embed)
                     msg_key = '_'.join([str(channel.id), str(x)])
