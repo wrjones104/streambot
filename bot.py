@@ -1,6 +1,7 @@
 import asyncio.exceptions
 import copy
 import datetime
+import calendar
 import http.client
 import json
 import os
@@ -189,7 +190,7 @@ async def getstreams():
                     gg = g['data']
                     index = aa['id']
                     n_streamlist[index] = {"user_name": aa["user_name"], "title": aa["title"],
-                                           "started_at": aa["started_at"], "category": aa["game_name"], "pic": gg[0]["profile_image_url"]}
+                                           "started_at": aa["started_at"], "category": aa["game_name"], "pic": gg[0]["profile_image_url"], "start_time": xx[0]["started_at"]}
                 k -= 1
 
         # Here we're going to create discord messages when a new stream shows up in the list. We're also going to delete
@@ -206,6 +207,7 @@ async def getstreams():
                     embed.url = f'https://twitch.tv/{n_streamlist[x]["user_name"]}'
                     embed.description = f'{n_streamlist[x]["title"].strip()}'
                     embed.set_thumbnail(url=n_streamlist[x]["pic"])
+                    embed.add_field(name="Started:", value=f'<t:{calendar.timegm(datetime.datetime.strptime(n_streamlist[x]["started_at"],"%Y-%m-%dT%H:%M:%SZ").utctimetuple())}:R>')
                     embed.colour = discord.Colour.random()
                     msg = await channel.send(embed=embed)
                     msg_key = '_'.join([str(channel.id), str(x)])
