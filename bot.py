@@ -125,7 +125,6 @@ async def getstreams():
             creds = json.load(cred)
         with open('db/blacklist.json') as bl:
             blacklist = json.load(bl)
-        print(f'blacklist={blacklist}')
         token = creds['token']
         global stream_msg
         n_streamlist = {}
