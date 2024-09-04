@@ -123,6 +123,9 @@ async def getstreams():
             game_cats = json.load(gc)
         with open('db/credentials.json') as cred:
             creds = json.load(cred)
+        with open('db/blacklist.json') as bl:
+            blacklist = json.load(bl)
+        print(f'blacklist={blacklist}')
         token = creds['token']
         global stream_msg
         n_streamlist = {}
@@ -179,6 +182,9 @@ async def getstreams():
             # streams to find any with keywords from the "game_cats.json" file in the title of the stream
             while k != 0:
                 if any(ac in xx[k - 1]['title'].lower() for ac in game_cats[gc]['exclusions']):
+                    pass
+                # Skip any streamer in the blacklist
+                elif any (bl in xx[k - 1]['user_name'].lower() for bl in blacklist.values()):
                     pass
                 elif any(ac in xx[k - 1]['title'].lower() for ac in game_cats[gc]['keywords']):
                     aa = xx[k - 1]
