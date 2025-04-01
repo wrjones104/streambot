@@ -152,7 +152,8 @@ def refresh_token():
     con = sqlite3.connect("db/cbdb.sqlite")
     cur = con.cursor()
     cur.execute("SELECT twitch_token FROM credentials")
-    curtoken = cur.fetchone()
+    curtoken = cur.fetchone()[0]
     cur.execute("UPDATE credentials SET twitch_token = (?) WHERE twitch_token = (?)", (newtoken, curtoken))
     con.commit()
     con.close()
+    return newtoken

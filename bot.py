@@ -271,15 +271,26 @@ async def getstreams():
                 res = conn.getresponse()
                 data = res.read()
                 x = data.decode("utf-8")
+                if res.status >= 400: # Check for any 4xx or 5xx status codes (errors)
+                    error_data = json.loads(x)
+                    print(f"{datetime.datetime.utcnow()} - Twitch API Error (Status {res.status}): {error_data}")
+                    if res.status == 401: # Specifically check for 401 Unauthorized (likely invalid token)
+                        token = functions.refresh_token() # Refresh the token
+                        headers['Authorization'] = f'Bearer {token}' # Update headers
+                        # Re-run the current API request
+                        conn.request("GET", "/helix/streams?user_login=" + str(s[0]).replace(" ",""), payload, headers)
+                        res = conn.getresponse()
+                        data = res.read()
+                        x = data.decode("utf-8")
+                    else:
+                        print(f"{datetime.datetime.utcnow()} - Non-token related Twitch API error, skipping this category.")
+                        continue # Skip to the next game category
                 conn.request("GET", "/helix/users?login=" + str(s[0]).replace(" ",""), payload, headers)
                 res = conn.getresponse()
                 data = res.read()
                 y = data.decode("utf-8")
                 # Twitch's API requires a refreshed token every 90 days. If it's time to refresh, the bot will do that here.
-                if "Invalid OAuth token" in x:
-                    token = functions.refresh_token()
-                    return
-                elif "Malformed query params" in x:
+                if "Malformed query params" in x:
                     print(f'{str(s[0])} is a bad entry - review and fix')
                     pass
                 else:
