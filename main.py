@@ -1,534 +1,363 @@
-import asyncio.exceptions
-import copy
+import asyncio
 import datetime
 import calendar
-import http.client
 import json
 import os
-import platform
 import sys
-from asyncio import sleep
+import logging
+from sqlite3 import connect
 
 import discord
 from discord.ext import tasks, commands
 from discord.utils import get
 from discord import app_commands
 
-import db_manager  # Assuming db_manager.py is in the same directory
+import db_manager
+from twitch_api import TwitchAPI
 from views import streamButton
 
-stream_msg = {}
-current_stream_msgs = {}
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-
-class aclient(commands.Bot):
-    def __init__(self):
-        # Retrieve the Discord token from the database
-        discord_token = db_manager.get_config('credentials', 'discord_token')
-        super().__init__(command_prefix='%^!', intents=discord.Intents.default(), token=discord_token)
-
-    async def on_ready(self):
-        await self.wait_until_ready()
-        prfx = str(datetime.datetime.utcnow())
-        print(prfx + " - Logged in as " + client.user.name)
-        print(prfx + " - Bot ID: " + str(client.user.id))
-        print(prfx + " - Discord Version: " + discord.__version__)
-        print(prfx + " - Python Version: " + str(platform.python_version()))
-        synclist = await client.tree.sync()
-        print(prfx + " - Slash Commands Synced: " + str(len(synclist)))
-        if not getstreams.is_running():
-            await start_stream_list()
-
+def get_sync_db_connection():
+    """Gets a synchronous connection for startup tasks."""
+    conn = connect(db_manager.DATABASE_NAME)
+    conn.row_factory = lambda cursor, row: row[0]
+    return conn
 
 def check_admin(interaction: discord.Interaction):
-    for x in interaction.user.roles:
-        if x.name in ["Racebot Admin", "Moderation team", "Admins"]:
-            return True
-    return False
-
+    """Checks if the user has one of the admin roles."""
+    # This could be improved by storing role IDs in the database instead of hardcoding names
+    admin_roles = {"Racebot Admin", "Moderation team", "Admins"}
+    return any(role.name in admin_roles for role in interaction.user.roles)
 
 def restart_bot():
+    """Restarts the bot.
+    Note: This is a hard restart and will lose all in-memory state.
+    """
     os.execv(sys.executable, ['python3'] + sys.argv)
 
-
-client = aclient()
-
-
-@client.tree.command(name="restart", description="Restart the bot if it's having trouble (limited to certain roles)")
-async def restart(interaction: discord.Interaction):
-    if check_admin(interaction):
-        await interaction.response.send_message('Restarting bot...')
-        restart_bot()
-    else:
-        await interaction.response.send_message("Only Admins, Moderators and Racebot Admins can use that command!", ephemeral=True)
-
-def refresh_token():
-    conn = http.client.HTTPSConnection("id.twitch.tv")
-    client_id = db_manager.get_config('credentials', 'twitch_client_id')
-    client_secret = db_manager.get_config('credentials', 'twitch_client_secret')
-    payload = f'client_id={client_id}&client_secret={client_secret}&grant_type=client_credentials'
-    headers = {
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    conn.request("POST", "/oauth2/token", payload, headers)
-    res = conn.getresponse()
-    data = res.read()
-    x = data.decode("utf-8")
-    j = json.loads(x)
-    newtoken = j['access_token']
-    db_manager.save_config('credentials', 'twitch_token', newtoken) # Save the new token to the database
-    print(f"{datetime.datetime.utcnow()} - Twitch token refreshed and saved to database.")
-    return newtoken
-
-
-async def start_stream_list():
-    await purge_channels()
+async def get_category_config(interaction: discord.Interaction, category_id: str):
+    """A helper to get and decode a category's config."""
+    config_json = await interaction.client.db_conn.get_config('game_categories', category_id)
+    if not config_json:
+        await interaction.response.send_message(f"Category ID '{category_id}' not found.", ephemeral=True)
+        return None
     try:
-        getstreams.start()
-    except RuntimeError as e:
-        print(f"Error in 'start_stream_list', attempting to restart task\nError: {e}")
-        getstreams.stop()
-        await sleep(10)
+        return json.loads(config_json)
+    except json.JSONDecodeError:
+        await interaction.response.send_message(f"Error decoding configuration for category ID '{category_id}'.", ephemeral=True)
+        return None
+
+class StreamBot(commands.Bot):
+    def __init__(self, *, intents: discord.Intents, **options):
+        super().__init__(command_prefix='%^!', intents=intents, **options)
+        self.db_conn = None
+        self.twitch_api = None
+        self.current_stream_msgs = {}  # In-memory cache of posted stream messages
+
+    async def setup_hook(self) -> None:
+        # --- Database Connection ---
+        self.db_conn = await db_manager.connect_db()
+        logging.info("Database connection established.")
+
+        # --- Twitch API Client ---
+        client_id = await db_manager.get_config(self.db_conn, 'credentials', 'twitch_client_id')
+        client_secret = await db_manager.get_config(self.db_conn, 'credentials', 'twitch_client_secret')
+        if not all([client_id, client_secret]):
+            logging.error("Twitch client ID or secret not found in database. Bot cannot start.")
+            return
+
+        self.twitch_api = TwitchAPI(client_id, client_secret, self.db_conn)
+        logging.info("Twitch API client initialized.")
+
+        # --- Sync slash commands ---
+        synclist = await self.tree.sync()
+        logging.info(f"Slash Commands Synced: {len(synclist)}")
+
+        # --- Start background task ---
+        self.get_streams_task.start()
+
+    async def on_ready(self):
+        logging.info(f"Logged in as {self.user.name} (ID: {self.user.id})")
+        logging.info(f"discord.py version: {discord.__version__}")
+
+    async def close(self):
+        logging.info("Closing connections...")
+        if self.twitch_api:
+            await self.twitch_api.close()
+        if self.db_conn:
+            await self.db_conn.close()
+        await super().close()
+
+    async def purge_and_notify_channels(self):
+        """Purges old messages from the bot in 'live-now' channels and sends an initial message."""
+        def is_me(m):
+            return m.author == self.user
+
+        for guild in self.guilds:
+            live_channel = get(guild.channels, name='live-now')
+            if live_channel and isinstance(live_channel, discord.TextChannel):
+                try:
+                    await live_channel.purge(check=is_me)
+                    await live_channel.send(
+                        "This is where active streams will show up! For your stream to show up, "
+                        "it must mention FF6WC in some way.",
+                        view=streamButton()
+                    )
+                except discord.errors.Forbidden:
+                    logging.warning(f"No permissions to purge messages in '{live_channel.name}' on guild '{guild.name}'.")
+                except Exception as e:
+                    logging.error(f"Error purging channel in guild {guild.id}: {e}")
+
+    @tasks.loop(minutes=1)
+    async def get_streams_task(self):
+        """The main task to fetch streams and update Discord."""
         try:
-            getstreams.start()
-        except RuntimeError as e2:
-            print(f"First task restart didn't work, trying again in 2 minutes...\nError: {e2}")
-            getstreams.stop()
-            await sleep(120)
-            getstreams.start()
+            # 1. Fetch all stream data from Twitch
+            game_categories_config = await db_manager.get_all_config(self.db_conn, 'game_categories')
+            blacklist = set((await db_manager.get_all_config(self.db_conn, 'blacklist')).values())
 
+            all_streams = {}
+            for cat_id, config_json in game_categories_config.items():
+                try:
+                    config = json.loads(config_json)
+                    streams = await self.twitch_api.get_streams(cat_id)
+                    for stream in streams:
+                        if self._is_stream_valid(stream, config, blacklist):
+                            all_streams[stream['id']] = stream
+                except json.JSONDecodeError:
+                    logging.error(f"Error decoding config for category ID: {cat_id}")
+                except Exception as e:
+                    logging.error(f"Error processing category {cat_id}: {e}")
 
-async def purge_channels():
-    def is_me(m):
-        return m.author == client.user
+            # 2. Enrich streams with profile pictures
+            await self._enrich_streams_with_user_data(all_streams)
 
-    try:
-        guilds = [guild async for guild in client.fetch_guilds()]
-        for x in guilds:
-            clean_channel = get(client.get_all_channels(), guild=x, name='live-now')
-            await clean_channel.purge(check=is_me)
-            await clean_channel.send("This is where all active streams will show up! For your stream to show up, "
-                                        "it must mention FF6WC in some way.", view=streamButton())
-    except AttributeError:
-        print("dang")
+            # 3. Update Discord posts
+            await self._update_discord_posts(all_streams)
 
+        except Exception as e:
+            logging.error(f"An unexpected error occurred in the main stream loop: {e}", exc_info=True)
 
-@client.tree.command(name="add_blacklist", description="Add a Twitch user to the blacklist")
+    @get_streams_task.before_loop
+    async def before_get_streams_task(self):
+        await self.wait_until_ready()
+        await self.purge_and_notify_channels()
+
+    def _is_stream_valid(self, stream: dict, category_config: dict, blacklist: set) -> bool:
+        """Checks if a stream meets the criteria to be posted."""
+        title_lower = stream['title'].lower()
+        user_name_lower = stream['user_name'].lower()
+
+        if user_name_lower in blacklist:
+            return False
+        if user_name_lower in category_config.get('exclusions', []):
+            return False
+        if not any(kw in title_lower for kw in category_config.get('keywords', [])):
+            return False
+
+        return True
+
+    async def _enrich_streams_with_user_data(self, streams: dict):
+        """Fetches profile pictures for a list of streams in-place."""
+        user_logins = [s['user_name'] for s in streams.values()]
+        if not user_logins:
+            return
+
+        user_data = await self.twitch_api.get_users(user_logins)
+        user_pics = {user['login']: user['profile_image_url'] for user in user_data}
+
+        for stream_id, stream in streams.items():
+            stream['pic'] = user_pics.get(stream['user_name'], None)
+
+    async def _update_discord_posts(self, new_streams: dict):
+        """Compares new streams with cached messages and updates Discord."""
+        new_stream_ids = set(new_streams.keys())
+        posted_stream_ids = {v['stream_id'] for v in self.current_stream_msgs.values()}
+
+        # Post new streams
+        streams_to_post = new_stream_ids - posted_stream_ids
+        for stream_id in streams_to_post:
+            stream = new_streams[stream_id]
+            for guild in self.guilds:
+                channel = get(guild.channels, name='live-now')
+                if channel:
+                    embed = self._create_stream_embed(stream)
+                    try:
+                        msg = await channel.send(embed=embed)
+                        msg_key = f"{channel.id}_{stream_id}"
+                        self.current_stream_msgs[msg_key] = {"stream_id": stream_id, "msg_id": msg.id, "channel_id": channel.id}
+                    except Exception as e:
+                        logging.error(f"Failed to send message for stream {stream_id} in guild {guild.id}: {e}")
+
+        # Remove old streams
+        streams_to_remove = posted_stream_ids - new_stream_ids
+        for stream_id in streams_to_remove:
+            # Find all messages associated with this stream_id and remove them
+            keys_to_delete = [k for k, v in self.current_stream_msgs.items() if v['stream_id'] == stream_id]
+            for key in keys_to_delete:
+                msg_info = self.current_stream_msgs.pop(key)
+                channel = self.get_channel(msg_info['channel_id'])
+                if channel:
+                    try:
+                        message = await channel.fetch_message(msg_info['msg_id'])
+                        await message.delete()
+                    except discord.errors.NotFound:
+                        pass # Message was already deleted
+                    except Exception as e:
+                        logging.error(f"Failed to delete message {msg_info['msg_id']} for stream {stream_id}: {e}")
+
+    def _create_stream_embed(self, stream: dict) -> discord.Embed:
+        """Creates a Discord embed for a given stream."""
+        embed = discord.Embed(
+            title=f'{stream["user_name"]} is streaming now!',
+            url=f'https://twitch.tv/{stream["user_name"]}',
+            description=stream['title'].strip(),
+            color=discord.Color.random()
+        )
+        if stream.get('pic'):
+            embed.set_thumbnail(url=stream['pic'])
+
+        start_time_dt = datetime.datetime.strptime(stream["started_at"], "%Y-%m-%dT%H:%M:%SZ")
+        start_timestamp = int(calendar.timegm(start_time_dt.utctimetuple()))
+        embed.add_field(name="Started", value=f'<t:{start_timestamp}:R>')
+        embed.add_field(name="Category", value=stream['game_name'])
+        return embed
+
+# --- Bot and Commands Setup ---
+intents = discord.Intents.default()
+client = StreamBot(intents=intents)
+
+@client.tree.command(name="restart", description="Restart the bot (Admin only)")
 @app_commands.check(check_admin)
-async def add_blacklist(interaction: discord.Interaction, username: str):
-    """Adds a Twitch username to the blacklist.
+async def restart(interaction: discord.Interaction):
+    await interaction.response.send_message('Restarting bot...')
+    restart_bot()
 
-    Args:
-        username (str): The Twitch username to blacklist (case-insensitive).
-    """
+# --- Admin Command Group ---
+admin_group = app_commands.Group(name="admin", description="Admin commands for bot configuration")
+
+@admin_group.command(name="add_blacklist", description="Add a Twitch user to the blacklist")
+async def add_blacklist(interaction: discord.Interaction, username: str):
     username_lower = username.lower()
-    # We'll use the username as the key for simplicity, though keys must be unique.
-    # If we want to allow the same username to be added multiple times (which is unlikely),
-    # we'd need a different key strategy (e.g., an auto-incrementing ID).
-    db_manager.save_config('blacklist', username_lower, username_lower)
+    await db_manager.save_config(interaction.client.db_conn, 'blacklist', username_lower, username_lower)
     await interaction.response.send_message(f"Successfully added '{username}' to the blacklist.", ephemeral=True)
 
-@add_blacklist.error
-async def add_blacklist_error(interaction: discord.Interaction, error):
-    if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("You do not have the necessary permissions to use this command.", ephemeral=True)
-    else:
-        print(f"An error occurred: {error}")
-        await interaction.response.send_message("An unexpected error occurred while adding to the blacklist.", ephemeral=True)
-
-@client.tree.command(name="remove_blacklist", description="Remove a Twitch user from the blacklist")
-@app_commands.check(check_admin)
+@admin_group.command(name="remove_blacklist", description="Remove a Twitch user from the blacklist")
 async def remove_blacklist(interaction: discord.Interaction, username: str):
-    """Removes a Twitch username from the blacklist.
-
-    Args:
-        username (str): The Twitch username to remove (case-insensitive).
-    """
-    username_lower = username.lower()
-    conn = db_manager.connect_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM config WHERE category = ? AND key = ?", ('blacklist', username_lower))
-    conn.commit()
-    conn.close()
-    if cursor.rowcount > 0:
+    if await db_manager.remove_config(interaction.client.db_conn, 'blacklist', username.lower()):
         await interaction.response.send_message(f"Successfully removed '{username}' from the blacklist.", ephemeral=True)
     else:
         await interaction.response.send_message(f"'{username}' was not found in the blacklist.", ephemeral=True)
 
-@remove_blacklist.error
-async def remove_blacklist_error(interaction: discord.Interaction, error):
-    if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("You do not have the necessary permissions to use this command.", ephemeral=True)
-    else:
-        print(f"An error occurred: {error}")
-        await interaction.response.send_message("An unexpected error occurred while removing from the blacklist.", ephemeral=True)
-
-@client.tree.command(name="add_category", description="Add a Twitch category ID to track with a custom name")
-@app_commands.check(check_admin)
+@admin_group.command(name="add_category", description="Add a Twitch category to track")
 async def add_category(interaction: discord.Interaction, category_id: str, name: str):
-    """Adds a Twitch category ID to the tracking list with a custom name.
-
-    Args:
-        category_id (str): The Twitch category ID to add (e.g., '18218').
-        name (str): A user-friendly name for this category (e.g., 'Final Fantasy VI').
-    """
     try:
-        game_id = int(category_id)
+        int(category_id)
     except ValueError:
         await interaction.response.send_message("Invalid Category ID. Please enter a numeric ID.", ephemeral=True)
         return
-
     config_data = {"name": name, "keywords": [], "exclusions": []}
-    db_manager.save_config('game_categories', str(game_id), json.dumps(config_data))
-    await interaction.response.send_message(f"Successfully added category ID '{category_id}' with name '{name}' to the tracking list.", ephemeral=True)
+    await db_manager.save_config(interaction.client.db_conn, 'game_categories', category_id, json.dumps(config_data))
+    await interaction.response.send_message(f"Successfully added category '{name}' ({category_id}).", ephemeral=True)
 
-@add_category.error
-async def add_category_error(interaction: discord.Interaction, error):
-    if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("You do not have the necessary permissions to use this command.", ephemeral=True)
-    else:
-        print(f"An error occurred: {error}")
-        await interaction.response.send_message("An unexpected error occurred while adding the category.", ephemeral=True)
-
-@client.tree.command(name="remove_category", description="Remove a Twitch category ID from tracking")
-@app_commands.check(check_admin)
+@admin_group.command(name="remove_category", description="Remove a Twitch category from tracking")
 async def remove_category(interaction: discord.Interaction, category_id: str):
-    """Removes a Twitch category ID from the tracking list.
-
-    Args:
-        category_id (str): The Twitch category ID to remove (e.g., '18218').
-    """
-    conn = db_manager.connect_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM config WHERE category = ? AND key = ?", ('game_categories', category_id))
-    conn.commit()
-    conn.close()
-    if cursor.rowcount > 0:
-        await interaction.response.send_message(f"Successfully removed category ID '{category_id}' from the tracking list.", ephemeral=True)
+    if await db_manager.remove_config(interaction.client.db_conn, 'game_categories', category_id):
+        await interaction.response.send_message(f"Successfully removed category ID '{category_id}'.", ephemeral=True)
     else:
-        await interaction.response.send_message(f"Category ID '{category_id}' was not found in the tracking list.", ephemeral=True)
+        await interaction.response.send_message(f"Category ID '{category_id}' was not found.", ephemeral=True)
 
-@remove_category.error
-async def remove_category_error(interaction: discord.Interaction, error):
-    if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("You do not have the necessary permissions to use this command.", ephemeral=True)
-    else:
-        print(f"An error occurred: {error}")
-        await interaction.response.send_message("An unexpected error occurred while removing the category.", ephemeral=True)
-
-@client.tree.command(name="add_keyword", description="Add a keyword to a tracked category")
-@app_commands.check(check_admin)
+@admin_group.command(name="add_keyword", description="Add a keyword to a category")
 async def add_keyword(interaction: discord.Interaction, category_id: str, keyword: str):
-    """Adds a keyword to a specific tracked category.
-
-    Args:
-        category_id (str): The ID of the category to add the keyword to.
-        keyword (str): The keyword to add (case-insensitive).
-    """
-    category_config_json = db_manager.get_config('game_categories', category_id)
-    if not category_config_json:
-        await interaction.response.send_message(f"Category ID '{category_id}' not found.", ephemeral=True)
-        return
-
-    try:
-        category_config = json.loads(category_config_json)
-    except json.JSONDecodeError:
-        await interaction.response.send_message(f"Error decoding configuration for category ID '{category_id}'.", ephemeral=True)
-        return
+    config = await get_category_config(interaction, category_id)
+    if config is None: return
 
     keyword_lower = keyword.lower().strip()
-    if keyword_lower not in category_config['keywords']:
-        category_config['keywords'].append(keyword_lower)
-        db_manager.save_config('game_categories', category_id, json.dumps(category_config))
-        await interaction.response.send_message(f"Successfully added keyword '{keyword}' to category ID '{category_id}'.", ephemeral=True)
+    if keyword_lower not in config['keywords']:
+        config['keywords'].append(keyword_lower)
+        await db_manager.save_config(interaction.client.db_conn, 'game_categories', category_id, json.dumps(config))
+        await interaction.response.send_message(f"Added keyword '{keyword}' to category '{config['name']}'.", ephemeral=True)
     else:
-        await interaction.response.send_message(f"Keyword '{keyword}' is already in category ID '{category_id}'.", ephemeral=True)
+        await interaction.response.send_message(f"Keyword '{keyword}' already exists in category '{config['name']}'.", ephemeral=True)
 
-@add_keyword.error
-async def add_keyword_error(interaction: discord.Interaction, error):
-    if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("You do not have the necessary permissions to use this command.", ephemeral=True)
-    else:
-        print(f"An error occurred: {error}")
-        await interaction.response.send_message("An unexpected error occurred while adding the keyword.", ephemeral=True)
-
-@client.tree.command(name="remove_keyword", description="Remove a keyword from a tracked category")
-@app_commands.check(check_admin)
+@admin_group.command(name="remove_keyword", description="Remove a keyword from a category")
 async def remove_keyword(interaction: discord.Interaction, category_id: str, keyword: str):
-    """Removes a keyword from a specific tracked category.
-
-    Args:
-        category_id (str): The ID of the category to remove the keyword from.
-        keyword (str): The keyword to remove (case-insensitive).
-    """
-    category_config_json = db_manager.get_config('game_categories', category_id)
-    if not category_config_json:
-        await interaction.response.send_message(f"Category ID '{category_id}' not found.", ephemeral=True)
-        return
-
-    try:
-        category_config = json.loads(category_config_json)
-    except json.JSONDecodeError:
-        await interaction.response.send_message(f"Error decoding configuration for category ID '{category_id}'.", ephemeral=True)
-        return
+    config = await get_category_config(interaction, category_id)
+    if config is None: return
 
     keyword_lower = keyword.lower().strip()
-    if keyword_lower in category_config['keywords']:
-        category_config['keywords'].remove(keyword_lower)
-        db_manager.save_config('game_categories', category_id, json.dumps(category_config))
-        await interaction.response.send_message(f"Successfully removed keyword '{keyword}' from category ID '{category_id}'.", ephemeral=True)
+    if keyword_lower in config['keywords']:
+        config['keywords'].remove(keyword_lower)
+        await db_manager.save_config(interaction.client.db_conn, 'game_categories', category_id, json.dumps(config))
+        await interaction.response.send_message(f"Removed keyword '{keyword}' from category '{config['name']}'.", ephemeral=True)
     else:
-        await interaction.response.send_message(f"Keyword '{keyword}' not found in category ID '{category_id}'.", ephemeral=True)
+        await interaction.response.send_message(f"Keyword '{keyword}' not found in category '{config['name']}'.", ephemeral=True)
 
-@remove_keyword.error
-async def remove_keyword_error(interaction: discord.Interaction, error):
-    if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("You do not have the necessary permissions to use this command.", ephemeral=True)
-    else:
-        print(f"An error occurred: {error}")
-        await interaction.response.send_message("An unexpected error occurred while removing the keyword.", ephemeral=True)
-
-@client.tree.command(name="add_exclusion", description="Add a Twitch user to the exclusion list for a category")
-@app_commands.check(check_admin)
+@admin_group.command(name="add_exclusion", description="Exclude a user from a category")
 async def add_exclusion(interaction: discord.Interaction, category_id: str, username: str):
-    """Adds a Twitch username to the exclusion list for a specific category.
-
-    Args:
-        category_id (str): The ID of the category to add the exclusion to.
-        username (str): The Twitch username to exclude (case-insensitive).
-    """
-    category_config_json = db_manager.get_config('game_categories', category_id)
-    if not category_config_json:
-        await interaction.response.send_message(f"Category ID '{category_id}' not found.", ephemeral=True)
-        return
-
-    try:
-        category_config = json.loads(category_config_json)
-    except json.JSONDecodeError:
-        await interaction.response.send_message(f"Error decoding configuration for category ID '{category_id}'.", ephemeral=True)
-        return
+    config = await get_category_config(interaction, category_id)
+    if config is None: return
 
     username_lower = username.lower().strip()
-    if username_lower not in category_config['exclusions']:
-        category_config['exclusions'].append(username_lower)
-        db_manager.save_config('game_categories', category_id, json.dumps(category_config))
-        await interaction.response.send_message(f"Successfully added '{username}' to the exclusion list for category ID '{category_id}'.", ephemeral=True)
+    if username_lower not in config['exclusions']:
+        config['exclusions'].append(username_lower)
+        await db_manager.save_config(interaction.client.db_conn, 'game_categories', category_id, json.dumps(config))
+        await interaction.response.send_message(f"Added exclusion for '{username}' to category '{config['name']}'.", ephemeral=True)
     else:
-        await interaction.response.send_message(f"'{username}' is already in the exclusion list for category ID '{category_id}'.", ephemeral=True)
+        await interaction.response.send_message(f"User '{username}' already excluded in category '{config['name']}'.", ephemeral=True)
 
-@add_exclusion.error
-async def add_exclusion_error(interaction: discord.Interaction, error):
-    if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("You do not have the necessary permissions to use this command.", ephemeral=True)
-    else:
-        print(f"An error occurred: {error}")
-        await interaction.response.send_message("An unexpected error occurred while adding the exclusion.", ephemeral=True)
-
-@client.tree.command(name="remove_exclusion", description="Remove a Twitch user from the exclusion list for a category")
-@app_commands.check(check_admin)
+@admin_group.command(name="remove_exclusion", description="Remove a user's exclusion from a category")
 async def remove_exclusion(interaction: discord.Interaction, category_id: str, username: str):
-    """Removes a Twitch username from the exclusion list for a specific category.
-
-    Args:
-        category_id (str): The ID of the category to remove the exclusion from.
-        username (str): The Twitch username to remove (case-insensitive).
-    """
-    category_config_json = db_manager.get_config('game_categories', category_id)
-    if not category_config_json:
-        await interaction.response.send_message(f"Category ID '{category_id}' not found.", ephemeral=True)
-        return
-
-    try:
-        category_config = json.loads(category_config_json)
-    except json.JSONDecodeError:
-        await interaction.response.send_message(f"Error decoding configuration for category ID '{category_id}'.", ephemeral=True)
-        return
+    config = await get_category_config(interaction, category_id)
+    if config is None: return
 
     username_lower = username.lower().strip()
-    if username_lower in category_config['exclusions']:
-        category_config['exclusions'].remove(username_lower)
-        db_manager.save_config('game_categories', category_id, json.dumps(category_config))
-        await interaction.response.send_message(f"Successfully removed '{username}' from the exclusion list for category ID '{category_id}'.", ephemeral=True)
+    if username_lower in config['exclusions']:
+        config['exclusions'].remove(username_lower)
+        await db_manager.save_config(interaction.client.db_conn, 'game_categories', category_id, json.dumps(config))
+        await interaction.response.send_message(f"Removed exclusion for '{username}' from category '{config['name']}'.", ephemeral=True)
     else:
-        await interaction.response.send_message(f"'{username}' not found in the exclusion list for category ID '{category_id}'.", ephemeral=True)
+        await interaction.response.send_message(f"User '{username}' not found in exclusions for category '{config['name']}'.", ephemeral=True)
 
-@remove_exclusion.error
-async def remove_exclusion_error(interaction: discord.Interaction, error):
+# Add the group to the command tree
+client.tree.add_command(admin_group)
+
+# Generic error handler for admin commands
+async def on_admin_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("You do not have the necessary permissions to use this command.", ephemeral=True)
+        await interaction.response.send_message("You do not have the necessary permissions for this command.", ephemeral=True)
     else:
-        print(f"An error occurred: {error}")
-        await interaction.response.send_message("An unexpected error occurred while removing the exclusion.", ephemeral=True)
+        logging.error(f"An error occurred in an admin command: {error}", exc_info=True)
+        await interaction.response.send_message("An unexpected error occurred.", ephemeral=True)
 
-@tasks.loop(minutes=1)
-async def getstreams():
+for command in admin_group.commands:
+    command.error(on_admin_error)
+
+# --- Main Execution ---
+async def main():
+    db_manager.initialize_db()
+
+    # We need a synchronous connection to get the token before starting the async loop
+    sync_conn = get_sync_db_connection()
+    discord_token = sync_conn.execute("SELECT value FROM config WHERE category = 'credentials' AND key = 'discord_token'").fetchone()
+    sync_conn.close()
+
+    if not discord_token:
+        logging.error("Discord token not found in database. Please run the script once manually to configure it.")
+        return
+
     try:
-        guilds = [guild async for guild in client.fetch_guilds()]
-        game_categories_config = db_manager.get_all_config('game_categories')
-        game_cats = {}
-        for cat_id, config_json in game_categories_config.items():
-            try:
-                game_cats[int(cat_id)] = json.loads(config_json)
-            except json.JSONDecodeError:
-                print(f"Error decoding config for category ID: {cat_id}")
-                continue
-        blacklist_config = db_manager.get_all_config('blacklist')
-        blacklist = set(blacklist_config.values())
-        token = db_manager.get_config('credentials', 'twitch_token') # Get token from database on each loop
-        if not token:
-            token = refresh_token() # Refresh if it's not there for some reason
-
-        global stream_msg
-        n_streamlist = {}
-
-        for gc_id, gc_config in game_cats.items():
-            conn = http.client.HTTPSConnection("api.twitch.tv")
-            payload = ''
-            headers = {
-                'Client-ID': db_manager.get_config('credentials', 'twitch_client_id'),
-                'Authorization': f'Bearer {token}'
-            }
-            conn.request("GET", "/helix/streams?game_id=" + str(gc_id) + "&first=100", payload, headers)
-            res = conn.getresponse()
-            data = res.read()
-            x = data.decode("utf-8")
-
-            if res.status >= 400: # Check for any 4xx or 5xx status codes (errors)
-                error_data = json.loads(x)
-                print(f"{datetime.datetime.utcnow()} - Twitch API Error (Status {res.status}): {error_data}")
-                if res.status == 401: # Specifically check for 401 Unauthorized (likely invalid token)
-                    token = refresh_token() # Refresh the token
-                    headers['Authorization'] = f'Bearer {token}' # Update headers
-                    # Re-run the current API request
-                    conn.request("GET", "/helix/streams?game_id=" + str(gc_id) + "&first=100", payload, headers)
-                    res = conn.getresponse()
-                    data = res.read()
-                    x = data.decode("utf-8")
-                else:
-                    print(f"{datetime.datetime.utcnow()} - Non-token related Twitch API error, skipping this category.")
-                    continue # Skip to the next game category
-
-            j = json.loads(x)
-            xx = j['data']
-            if not j['pagination']:
-                empty_page = True
-                pag = ""
-            else:
-                pag = j['pagination']['cursor']
-                empty_page = False
-
-            while not empty_page:
-                conn.request("GET", "/helix/streams?game_id=" + str(gc_id) + "&first=100&after=" + str(pag), payload,
-                             headers)
-                res = conn.getresponse()
-                data = res.read()
-                x = data.decode("utf-8")
-
-                if res.status >= 400: # Check for errors again
-                    error_data = json.loads(x)
-                    print(f"{datetime.datetime.utcnow()} - Twitch API Error (Status {res.status}): {error_data}")
-                    if res.status == 401:
-                        token = refresh_token()
-                        headers['Authorization'] = f'Bearer {token}'
-                        conn.request("GET", "/helix/streams?game_id=" + str(gc_id) + "&first=100&after=" + str(pag), payload,
-                                     headers)
-                        res = conn.getresponse()
-                        data = res.read()
-                        x = data.decode("utf-8")
-                    else:
-                        print(f"{datetime.datetime.utcnow()} - Non-token related Twitch API error during pagination, skipping the rest of this category's pages.")
-                        empty_page = True # Stop fetching further pages for this category
-                        continue
-
-                j = json.loads(x)
-                try:
-                    if not j['pagination']:
-                        empty_page = True
-                        pass
-                    else:
-                        pag = j['pagination']['cursor']
-                        xx += j['data']
-                except KeyError:
-                    print(j)
-                k = len(xx)
-
-                while k != 0:
-                    if any(ac in xx[k - 1]['title'].lower() for ac in gc_config['exclusions']):
-                        pass
-                    # Skip any streamer in the blacklist (case-insensitive)
-                    elif xx[k - 1]['user_name'].lower() in blacklist:
-                        pass
-                    elif any(ac in xx[k - 1]['title'].lower() for ac in gc_config['keywords']):
-                        aa = xx[k - 1]
-                        conn.request("GET", "/helix/users?login=" + str(aa["user_name"]), payload, headers)
-                        res = conn.getresponse()
-                        # We should also check the status code for this request, but for now let's keep it simpler.
-                        data = res.read()
-                        y = data.decode("utf-8")
-                        g = json.loads(y)
-                        gg = g['data']
-                        index = aa['id']
-                        n_streamlist[index] = {"user_name": aa["user_name"], "title": aa["title"],
-                                                "started_at": aa["started_at"], "category": aa["game_name"], "pic": gg[0]["profile_image_url"], "start_time": xx[0]["started_at"]}
-                    k -= 1
-
-        for x in n_streamlist:
-            if any(str(x) in d.values() for d in current_stream_msgs.values()):
-                pass
-            else:
-                for g in guilds:
-                    channel = get(client.get_all_channels(), guild=g, name='live-now')
-                    embed = discord.Embed()
-                    embed.title = f'{n_streamlist[x]["user_name"]} is streaming now!'
-                    embed.url = f'https://twitch.tv/{n_streamlist[x]["user_name"]}'
-                    embed.description = f'{n_streamlist[x]["title"].strip()}'
-                    embed.set_thumbnail(url=n_streamlist[x]["pic"])
-                    embed.add_field(name="Started:", value=f'<t:{calendar.timegm(datetime.datetime.strptime(n_streamlist[x]["started_at"],"%Y-%m-%dT%H:%M:%SZ").utctimetuple())}:R>')
-                    embed.colour = discord.Colour.random()
-                    msg = await channel.send(embed=embed)
-                    msg_key = '_'.join([str(channel.id), str(x)])
-                    current_stream_msgs[msg_key] = {"stream_id": x, "msg_id": msg.id, "channel": channel.id,
-                                                    "title": n_streamlist[x]['title'].strip(),
-                                                    "category": n_streamlist[x]['category']}
-        for y, v in copy.deepcopy(current_stream_msgs).items():
-            if v['stream_id'] not in n_streamlist.keys():
-                channel = client.get_channel(v['channel'])
-                message = await channel.fetch_message(v['msg_id'])
-                try:
-                    await message.delete()
-                except:
-                    del current_stream_msgs[v]
-            elif v['stream_id'] in n_streamlist.keys() and (v['title'] != n_streamlist[v['stream_id']]['title']):
-                channel = client.get_channel(v['channel'])
-                message = await channel.fetch_message(v['msg_id'])
-                try:
-                    await message.delete()
-                    del current_stream_msgs[y]
-                except:
-                    del current_stream_msgs[y]
-        for k, u in copy.deepcopy(current_stream_msgs).items():
-            if u['stream_id'] not in n_streamlist.keys():
-                del current_stream_msgs[k]
-
-    except discord.errors.HTTPException as e:
-        print(f"Error: {e}")
-        await sleep(5)
+        await client.start(discord_token)
+    except KeyboardInterrupt:
         pass
-    except RuntimeError as e:
-        print(f"Error: {e}")
-        getstreams.stop()
-        await sleep(10)
-        try:
-            getstreams.start()
-        except RuntimeError as e2:
-            print(f"First task restart didn't work, trying again in 2 minutes...\nError: {e2}")
-            getstreams.stop()
-            await sleep(120)
-            getstreams.start()
-        pass
+    finally:
+        if not client.is_closed():
+            await client.close()
 
-
-try:
-    client.run(db_manager.get_config('credentials', 'discord_token'))
-except (asyncio.exceptions.TimeoutError, asyncio.exceptions.CancelledError, discord.errors.ConnectionClosed):
-    restart_bot()
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (asyncio.exceptions.TimeoutError, asyncio.exceptions.CancelledError, discord.errors.ConnectionClosed):
+        restart_bot()

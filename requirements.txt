@@ -1,3 +1,4 @@
 discord.py
-discord.ext
-python-dotenv
+aiohttp
+aiosqlite
+aiodns
