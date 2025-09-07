@@ -114,10 +114,45 @@ class StreamBot(commands.Bot):
                 except Exception as e:
                     logging.error(f"Error purging channel in guild {guild.id}: {e}")
 
+    async def _verify_posted_messages(self):
+        """Verifies that all tracked messages still exist on Discord."""
+        # Iterate over a copy of the keys, as we may modify the dict in the loop
+        for key in list(self.current_stream_msgs.keys()):
+            msg_info = self.current_stream_msgs.get(key)
+            if not msg_info:
+                continue
+
+            channel = self.get_channel(msg_info['channel_id'])
+            if not channel:
+                # Channel not found, maybe bot was kicked?
+                # Clean up the state for this channel.
+                keys_to_delete = [k for k, v in self.current_stream_msgs.items() if v['channel_id'] == msg_info['channel_id']]
+                for k_to_del in keys_to_delete:
+                    stream_id_to_del = self.current_stream_msgs.pop(k_to_del)['stream_id']
+                    await db_manager.remove_posted_stream(self.db_conn, stream_id_to_del)
+                logging.warning(f"Removed {len(keys_to_delete)} tracked messages for a channel that could not be found (ID: {msg_info['channel_id']}).")
+                continue
+
+            try:
+                await channel.fetch_message(msg_info['msg_id'])
+            except discord.errors.NotFound:
+                logging.info(f"Message {msg_info['msg_id']} for stream {msg_info['stream_id']} not found. Removing from state.")
+                # Message was deleted, so remove it from our state
+                del self.current_stream_msgs[key]
+                await db_manager.remove_posted_stream(self.db_conn, msg_info['stream_id'])
+            except discord.errors.Forbidden:
+                logging.warning(f"No permissions to fetch message {msg_info['msg_id']} in channel {channel.id}. Cannot verify its status.")
+            except Exception as e:
+                logging.error(f"Error verifying message {msg_info['msg_id']}: {e}")
+
+
     @tasks.loop(minutes=1)
     async def get_streams_task(self):
         """The main task to fetch streams and update Discord."""
         try:
+            # 0. Verify that previously posted messages still exist
+            await self._verify_posted_messages()
+
             # 1. Fetch all stream data from Twitch
             game_categories_config = await db_manager.get_all_config(self.db_conn, 'game_categories')
             blacklist = set((await db_manager.get_all_config(self.db_conn, 'blacklist')).values())
