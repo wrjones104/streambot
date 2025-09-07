@@ -37,24 +37,65 @@ async def remove_config(conn: aiosqlite.Connection, category: str, key: str):
     await conn.commit()
     return cursor.rowcount > 0
 
+# --- Functions for Posted Streams ---
+
+async def add_posted_stream(conn: aiosqlite.Connection, stream_id: str, message_id: int, channel_id: int):
+    """Adds a record of a posted stream message to the database."""
+    await conn.execute(
+        "INSERT OR REPLACE INTO posted_streams (stream_id, message_id, channel_id) VALUES (?, ?, ?)",
+        (stream_id, message_id, channel_id)
+    )
+    await conn.commit()
+
+async def remove_posted_stream(conn: aiosqlite.Connection, stream_id: str):
+    """Removes a posted stream record from the database."""
+    await conn.execute("DELETE FROM posted_streams WHERE stream_id = ?", (stream_id,))
+    await conn.commit()
+
+async def get_all_posted_streams(conn: aiosqlite.Connection) -> dict:
+    """Retrieves all posted stream records from the database."""
+    async with conn.execute("SELECT stream_id, message_id, channel_id FROM posted_streams") as cursor:
+        rows = await cursor.fetchall()
+        # The key in current_stream_msgs is f"{channel.id}_{stream_id}"
+        # We need to reconstruct this from the database
+        return {
+            f"{row['channel_id']}_{row['stream_id']}": {
+                "stream_id": row['stream_id'],
+                "msg_id": row['message_id'],
+                "channel_id": row['channel_id']
+            } for row in rows
+        }
+
+
 def initialize_db():
-    """Initializes the database and creates the config table if it doesn't exist,
+    """Initializes the database and creates tables if they don't exist,
     prompting for essential credentials if they are not found.
     This function remains synchronous as it's part of the initial setup.
     """
     conn = sqlite3.connect(DATABASE_NAME)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
+
+    # --- Config Table ---
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS config (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             category TEXT NOT NULL,
-            key TEXT UNIQUE NOT NULL,
-            value TEXT NOT NULL
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            UNIQUE(category, key)
         )
     """)
-    # Check for unique constraint on category and key together
-    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_category_key ON config (category, key)")
+
+    # --- Posted Streams Table ---
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS posted_streams (
+            stream_id TEXT PRIMARY KEY,
+            message_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL
+        )
+    """)
+
     conn.commit()
 
     # Synchronous get_config for initialization
