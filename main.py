@@ -61,6 +61,10 @@ class StreamBot(commands.Bot):
         self.db_conn = await db_manager.connect_db()
         logging.info("Database connection established.")
 
+        # --- Load existing stream messages from DB ---
+        self.current_stream_msgs = await db_manager.get_all_posted_streams(self.db_conn)
+        logging.info(f"Loaded {len(self.current_stream_msgs)} tracked stream messages from the database.")
+
         # --- Twitch API Client ---
         client_id = await db_manager.get_config(self.db_conn, 'credentials', 'twitch_client_id')
         client_secret = await db_manager.get_config(self.db_conn, 'credentials', 'twitch_client_secret')
@@ -191,6 +195,7 @@ class StreamBot(commands.Bot):
                         msg = await channel.send(embed=embed)
                         msg_key = f"{channel.id}_{stream_id}"
                         self.current_stream_msgs[msg_key] = {"stream_id": stream_id, "msg_id": msg.id, "channel_id": channel.id}
+                        await db_manager.add_posted_stream(self.db_conn, stream_id, msg.id, channel.id)
                     except Exception as e:
                         logging.error(f"Failed to send message for stream {stream_id} in guild {guild.id}: {e}")
 
@@ -210,6 +215,9 @@ class StreamBot(commands.Bot):
                         pass # Message was already deleted
                     except Exception as e:
                         logging.error(f"Failed to delete message {msg_info['msg_id']} for stream {stream_id}: {e}")
+                # Always remove from DB even if channel/message deletion fails,
+                # as the stream is no longer live.
+                await db_manager.remove_posted_stream(self.db_conn, stream_id)
 
     def _create_stream_embed(self, stream: dict) -> discord.Embed:
         """Creates a Discord embed for a given stream."""
