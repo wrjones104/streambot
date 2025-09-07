@@ -161,15 +161,18 @@ class StreamBot(commands.Bot):
 
     async def _enrich_streams_with_user_data(self, streams: dict):
         """Fetches profile pictures for a list of streams in-place."""
-        user_logins = [s['user_name'] for s in streams.values()]
-        if not user_logins:
+        # Use 'user_login' which is the canonical, lowercase login name for matching
+        user_logins_to_fetch = [s['user_login'] for s in streams.values() if 'user_login' in s]
+        if not user_logins_to_fetch:
             return
 
-        user_data = await self.twitch_api.get_users(user_logins)
+        user_data = await self.twitch_api.get_users(user_logins_to_fetch)
+        # The key from the get_users API call is 'login'
         user_pics = {user['login']: user['profile_image_url'] for user in user_data}
 
         for stream_id, stream in streams.items():
-            stream['pic'] = user_pics.get(stream['user_name'], None)
+            # Look up the picture using the stream's 'user_login'
+            stream['pic'] = user_pics.get(stream.get('user_login'), None)
 
     async def _update_discord_posts(self, new_streams: dict):
         """Compares new streams with cached messages and updates Discord."""
