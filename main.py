@@ -39,7 +39,7 @@ def restart_bot():
 
 async def get_category_config(interaction: discord.Interaction, category_id: str):
     """A helper to get and decode a category's config."""
-    config_json = await interaction.client.db_conn.get_config('game_categories', category_id)
+    config_json = await db_manager.get_config(interaction.client.db_conn, 'game_categories', category_id)
     if not config_json:
         await interaction.response.send_message(f"Category ID '{category_id}' not found.", ephemeral=True)
         return None
